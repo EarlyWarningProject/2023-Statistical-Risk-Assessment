@@ -1,0 +1,5 @@
+country,ccode,ccode_gw,ccode_polity,year,month,day,coup,version,cou.s.d,cou.f.d
+Sao Tome and Principe,403,,,2022,11,25,1,V2023.09.08,0,1
+Guinea-Bissau,404,,,2022,2,1,1,V2023.09.08,0,1
+Burkina Faso,439,,,2022,1,23,2,V2023.09.08,1,0
+Burkina Faso,439,,,2022,9,30,2,V2023.09.08,1,0
