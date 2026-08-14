@@ -1,0 +1,1176 @@
+---
+title: "Updating Data to be used in SRA"
+author: "Julia Levine & Natalie Bryce"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+library(data.table)
+library(knitr)
+library(zoo)
+library(ggplot2)
+library(dplyr)
+#rm(list = ls())
+# the year of the data we are adding in
+update_years <- c(2022)
+first.pass <- F
+setwd("/Users/nmbryce/Documents/R/SRA/2023-Statistical-Risk-Assessment-github/2.Make-new-base-adata")
+base_data = "output/prepared2022predictors-no2022-2023-10-26-2.csv"
+```
+
+
+
+
+\newpage
+
+
+# Load in old data
+
+The following code reads in the old data. It then takes the most recent data for each country and replicates it for the years that we are updating -- this let's us easily keep the time-invariant values, like region. I then set aside the old data, and update the data that will be appended.
+
+```{r}
+# read in data from the previous years , called dat 
+
+  dat <- fread(base_data)
+
+# carry forward all data from the most recent year
+
+  carry_from <- max(dat$year)
+  
+  # this only applies if updating multiple years simultaneously
+  # it carries forward the most recent data for each of the years to be updated
+  dat_new <- rbindlist(rep(list(dat[year == carry_from]), times = length(update_years)))
+  
+  # relabel the years
+  
+  dat_new$year <- rep(update_years, each = nrow(dat_new))
+
+# rename old data and leave it alone until you've updated all 
+# variables except for the lag/leads
+  
+  dat_old <- dat
+  rm(dat)
+  
+
+```
+
+
+
+# Update 
+
+## Define functions
+
+### carry_forward
+
+The following is a function to carry forward recent values of a variable for countries where it's NA
+
+```{r}
+  carry_forward <- function(variable, 
+                            carry_to = update_years, 
+                            data = dat, 
+                            carry_from = (update_years - 1)){
+    na_var <- data[year == carry_to & is.na(get(variable))]$ccode
+    
+    cat(paste0("Missing values for ", length(na_var), " countries."))
+
+    carry_var <- subset(data[year == carry_from & ccode %in% na_var], 
+                        select = c("ccode", variable))
+    cat(paste0("\nFilling in values for ", 
+               nrow(carry_var[!is.na(get(variable))]), " countries."))
+
+    for(i in carry_var[!is.na(get(variable))]$ccode){
+      data[year == carry_to & ccode == i, 
+          (variable) := carry_var[ccode == i, get(variable)]]
+      data[year == carry_to & ccode == i, (paste(variable, "carry_from", sep = "_")) := carry_from]
+    }
+  }
+```
+
+### merge_dat
+
+The following is a function that removes the variables that were carried forward from the base data, and then merges in the updated variables from the appropriate year.
+
+```{r}
+merge_dat <- function(new_data, base_data = dat_new, 
+                      merge_new_by = c("ccode", "year"), 
+                      merge_base_by = c("ccode", "year")){
+  new_data_vars <- colnames(new_data)[!colnames(new_data) %in% merge_new_by]
+  dat1 <- subset(base_data, 
+                 select = colnames(base_data)[!(colnames(base_data) %in% 
+                                                  new_data_vars)])
+  dat1 <- merge(dat1, new_data, 
+                by.x = merge_base_by, 
+                by.y = merge_new_by, all.x = TRUE)
+  dat1
+}
+```
+
+
+
+## Country age
+
+This chunk updates country age by adding the difference between the updated years and the year the data was carried from to the country age variable. 
+
+```{r}
+# update country age
+
+  diff <- update_years - carry_from
+  
+  for(i in 1:length(update_years)){
+    dat_new$countryage[dat_new$year == update_years[i]] <- 
+    dat_new$countryage[dat_new$year == update_years[i]] + diff[i]
+  }
+
+# update logged country age variable
+
+  dat_new$countryage.ln <- log(dat_new$countryage + 1)
+```
+
+
+
+## VDEM
+
+The following code reads in the most recent V-DEM data, selecting the relevant variables and renaming them. 
+
+```{r, eval = FALSE}
+
+
+  vdemfull <- fread("input/V-Dem-CY-Full+Others-v13.csv")
+  
+# subset to just use these variables 
+#note v2mecenefm_ord and e_peinfmor was added for the 2023 update
+
+
+  vdem_vars <- c("v2cldmovem_ord", 
+                 "v2cldmovew_ord", 
+                 "v2clkill_ord",
+                 "v2clsocgrp_ord", 
+                 "v2clrgunev_ord", 
+                 "v2csreprss_ord", 
+                 "v2pepwrsoc_ord", 
+                 "v2elrstrct",
+                 "v2psparban_ord", 
+                 "v2psoppaut_ord", 
+                 "v2jureform_ord",
+                 "v2clrelig_ord", 
+                 "v2xcl_disc", 
+                 "v2pepwrses_ord", 
+                 "v2pepwrses",
+                 "e_migdpgro", 
+                 "e_mipopula", 
+                 "e_cow_exports", 
+                 "e_cow_imports", 
+                 "e_migdppc", 
+                 "v2csgender_ord",
+                 "v2pepwrgen_ord", 
+                 "v2mecenefm_ord",
+                 "e_peinfmor",
+                 "e_pop",
+                 "e_gdppc")
+
+  
+  keep <- c("COWcode", "country_name", "year", vdem_vars)
+
+# function that renames and formats variables, 
+# takes dataset and vector of variables to keep as inputs
+  
+  source("helper scripts/format_vdem.R")
+  
+# function that maps COW codes onto PITF country codes, 
+# contained in format_vdem 
+  
+  source("helper scripts/cowtopitf2018.R")
+  
+
+# format and save vdem
+
+  vdem <- format_vdem(dat = vdemfull, keep = keep)
+
+save(vdem, file = "input/vdem.Rdata")
+```
+
+```{r}
+# read in formatted VDEM variables for the update years 
+  
+  load("input/vdem.Rdata")
+
+# limit to the update years
+  
+  vdem <- vdem[year %in% update_years]
+
+# count missing values
+# check which variables are missing values
+  
+  missing <- apply(vdem[COWcode %in% dat_new$ccode], 2, 
+                   function(x) sum(is.na(x)))
+  kable(missing, col.names = "NA count")
+
+# check which variables are missing for all countries, indicating that they
+# have not been updated yet, and are potentially discontinued
+  
+  all.missing <- names(missing)[missing == nrow(vdem)]
+  if(length(all.missing) > 0){
+      cat(paste0("The following variables have not been updated as of ", 
+            Sys.Date(),":\n", paste(all.missing, collapse = "\n")))
+  }
+
+  
+# this ensures that we don't replace old country names
+# VDEM sometimes changes them
+  
+  vdem$country_name <- NULL
+  
+  #rename Vdem's COW code column
+  
+  colnames(vdem)[colnames(vdem) == 'COWcode'] <- 'ccode'
+
+# update V-DEM data
+  
+  dat_new <- merge_dat(new_data = vdem)
+  
+
+```
+
+
+## WDI
+
+This chunk pulls select variables from the WDI API.
+
+
+```{r, eval = FALSE}
+# In June 2020 WDI decommissioned V1 of the API
+# so you may need to re-install the WDI package.  
+# install.packages("devtools")
+  # devtools::install_github("vincentarelbundock/WDI")
+  library(WDI)
+
+# list indicators we want to pull
+  
+  wdilist <- c("NE.TRD.GNFS.ZS",     # Trade (% of GDP)
+               "NY.GDP.PCAP.KD",     # GDP per capita (constant 2000 US$)
+               "NY.GDP.MKTP.KD.ZG",  # GDP growth (annual %)
+               "SP.POP.TOTL",        # Population, total
+               "SP.DYN.IMRT.IN"      # Infant mortality rate
+               
+      )
+
+  # confirm that all of the old indicator names are in use 
+  
+    (check.names <- rbindlist(lapply(wdilist, function(x) {
+      # search the indicator list for each of the variables in wdilist
+       res <- WDIsearch(x, field = "indicator") 
+       # take the first match (drops those with extra letters on the end)
+       if(length(res) > 2){
+         res <- res[1, ]
+       } 
+       data.table("indicator" = res[1], "name" = res[2])})))
+
+# Extract latest version of desired variables from WDI 
+# also pull 5 years from before so that we can carry forward
+# more recent values for variables like infant mortality that are slow to update
+  
+  wdi <- WDI(country="all", indicator=wdilist, extra=FALSE, 
+             start=(min(update_years) - 5))
+
+#add COW codes for merging, remove country column to avoid merging that in later 
+  library(countrycode)
+  
+  wdi <- wdi %>% 
+  mutate(ccode = countrycode(iso3c, origin = "iso3c", destination = "cown"))
+  
+  wdi <- wdi %>% 
+  mutate(ccode = ifelse(country == "Kosovo",347,ccode),
+         ccode = ifelse(country == "Serbia",345,ccode))
+
+
+#See which cowcodes don't match - we see that these are all regions or small states that we don't include in our dataset
+
+wdi %>% 
+  anti_join(dat_new, by = c("ccode")) %>% 
+  select(year, country)
+
+#checking for NAs, the only issues are Kosovo - I change it to 347 - and Serbia - changed to 345
+
+wdi %>% 
+  filter(is.na(ccode))
+
+#remove country name
+wdi <- wdi %>% 
+  select(-country)
+
+
+# Reorder for easier review
+  
+  wdi <- wdi[order(wdi$ccode, wdi$year),]
+
+# Rename variables-- add a "new" to indicate these are newly brought in from wdi
+# to avoid reusing names already in the old EWP data
+  
+  setDT(wdi)
+  wdi_cols <- c("wdi.trade.new",
+             "wdi.gdppc.new",
+             "wdi.gdppcgrow.new",
+             "wdi.popsize.new", 
+             "wdi.imrate.new")
+  setnames(wdi, 
+           c("NE.TRD.GNFS.ZS",    
+             "NY.GDP.PCAP.KD",    
+             "NY.GDP.MKTP.KD.ZG", 
+             "SP.POP.TOTL",       
+             "SP.DYN.IMRT.IN"), 
+           wdi_cols)
+
+
+# save to the input folder
+  if(first.pass == T){dir.create("input/temp/wdi")}
+  fwrite(wdi, paste0("input/temp/wdi/wdipulled-", Sys.Date(), ".csv"))
+```
+
+
+
+
+
+This chunk reads in the latest pull from the WDI API, counts the missing values, and merges it into the main dataset.
+
+```{r}
+  
+ wdi <- fread("input/temp/wdi/wdipulled-2023-10-26.csv")
+
+#create "new.2" versions so that they merge correctly with those vars as well
+wdi <- wdi %>% 
+  mutate(wdi.trade.new.2 = wdi.trade.new,
+         wdi.gdppc.new.2 = wdi.gdppc.new,
+         wdi.gdppcgrow.new.2 = wdi.gdppcgrow.new,
+         wdi.imrate.new.2 = wdi.imrate.new)
+
+new.wdi <- wdi[year %in% update_years]
+
+  
+# check which variables are missing values
+  
+  wdi_cols <- c("wdi.trade.new.2",
+             "wdi.gdppc.new.2",
+             "wdi.gdppcgrow.new.2",
+             "wdi.popsize.new", 
+             "wdi.imrate.new.2")
+  missing = melt(new.wdi[, lapply(.SD, function(x) sum(is.na(x))), .SDcols = wdi_cols])
+
+  kable(missing, col.names = c("Variable", "NA count"))
+
+# check which variables are missing for all countries, indicating that they
+# have not been updated yet, but potentially will be in the future
+  
+  all.missing <- missing[value == length(unique(wdi$sftgcode))]$variable
+  cat(paste("\n", all.missing, "not updated as of", Sys.Date()))
+
+  #Hold on carrying forward the last non-missing value of infant mortality
+  # Carry forward last non-missing values of tradeshare and gdp as they were mostly updated in 2018 and the earliest values from CIA factbook are 2017
+
+  carry_forward(variable = "wdi.trade.new", carry_from = update_years - 1, data = wdi)
+  carry_forward(variable = "wdi.trade.new", carry_from = update_years - 2, data = wdi)
+  carry_forward(variable = "wdi.trade.new", carry_from = update_years - 3, data = wdi)
+  
+  carry_forward(variable = "wdi.gdppc.new", carry_from = update_years - 1, data = wdi)
+  carry_forward(variable = "wdi.gdppc.new", carry_from = update_years - 2, data = wdi)
+  carry_forward(variable = "wdi.gdppc.new", carry_from = update_years - 3, data = wdi)
+
+  
+  missing = melt(new.wdi[, lapply(.SD, function(x) sum(is.na(x))), .SDcols = wdi_cols])
+  kable(missing, col.names = c("Variable", "NA count"))
+  
+# Merge it in to main data
+  
+  
+  dat_new <- merge_dat(new_data = wdi[year %in% update_years])
+  dat_new[, imr.sqrt.new := sqrt(wdi.imrate.new)]
+  dat_new[, imr.sqrt.new.2 := sqrt(wdi.imrate.new.2)]
+  dat_new[, wdi.trade.ln.new := log(wdi.trade.new)]
+  dat_new[, wdi.trade.ln.new.2 := log(wdi.trade.new.2)]
+  dat_new[,wdi.popsize.ln := log(wdi.popsize.new)]
+
+  
+```
+
+
+
+## UCDP battle-related deaths 
+
+
+The following code reads in the [UCDP data](https://ucdp.uu.se/downloads/) and changes country names to match. 
+Below, I sum the number of battledeaths for each country in the update years, and merge this onto dat_new. 
+
+
+```{r, eval = F}
+# read in UCDP data
+  
+  ucdp <- fread("input/BattleDeaths_v23_1.csv")
+
+# making sure we have the same variables as in 18.1 version. 
+# colnames for 18.1 are uppercase, use tolower when checking
+
+  colnames(ucdp) <- gsub("_", "", colnames(ucdp))
+
+# limit to the update years and conflict type >= 3
+  
+  ucdp <- ucdp[year %in% update_years & typeofconflict >= 3]
+
+# change country names to match
+  
+  diff_loc <- setdiff(unique(ucdp$locationinc), unique(dat_new$country))
+  
+  # drops the locations that involve multiple countries
+  
+    diff_loc <- diff_loc[grepl(", ", diff_loc) == F]
+  
+  # change names
+    
+    ucdp$locationinc[ucdp$locationinc=="Burkina Faso"] = "Burkina Faso (Upper Volta)"
+    ucdp$locationinc[ucdp$locationinc=="Yemen (North Yemen)"] = "Yemen (unified)"
+    ucdp$locationinc[ucdp$locationinc=="DR Congo (Zaire)"] = "Congo, Democratic Republic of (Zaire)"
+    ucdp$locationinc[ucdp$locationinc=="Turkey"] = "Turkey (Ottoman Empire)"
+
+
+    
+    if(length(setdiff(unique(ucdp$locationinc), 
+                      unique(dat_new$country)))>0){
+      stop("Different country names")}
+    
+    
+# group by year/country and sum battledeaths
+    
+  bd <- ucdp[, .("battledeaths" = sum(bdbest)), by = c("locationinc", "year")]
+  
+# save battledeath data
+  
+  fwrite(bd, "input/temp/battledeaths.csv")
+```
+
+
+
+I then read in the battledeaths for each country and merge it into the new data, replacing missing values with zeroes and updating the logged version of this variable.
+
+```{r}
+# read in battledeaths data
+
+  bd <- fread("input/temp/battledeaths.csv")
+
+# merge battledeaths into main data
+    
+  dat_new <- merge_dat(new_dat = bd,
+                       merge_new_by = c("locationinc", "year"), 
+                       merge_base_by = c("country", "year"))
+
+    
+  
+# fill in zeroes and update logged variable
+  
+  setDT(dat_new)
+  
+  dat_new[, battledeaths := ifelse(is.na(battledeaths), 0, battledeaths)]
+  dat_new[, battledeaths.ln := log(battledeaths + 1)]
+  
+```
+
+
+## Coup Attempts
+
+This code reads in the most updated version of the Powell and Thyne data which is posted on their website. It selects coups in the years to be updated
+
+
+```{r, eval = FALSE}
+
+# pull coup data from powell and thyne website
+
+  coup_dat <- as.data.table(read.delim("http://www.uky.edu/~clthyn2/coup_data/powell_thyne_coups_final.txt"))
+
+# keep coups in the update years
+  
+  new_coup <- coup_dat[year %in% update_years]
+
+# where coup == 2 it was a successful coup
+# where coup == 1 it was a failed coup
+  
+  new_coup[, cou.s.d := ifelse(coup == 2, 1, 0)]
+  new_coup[, cou.f.d := ifelse(coup == 1, 1, 0)]
+
+# save coup data
+  
+  fwrite(new_coup, paste0("input/temp/", "new-coups-pulled-", Sys.Date(), ".csv"))
+```
+
+
+
+This updates the coup variables in dat_new.
+
+```{r}
+# read in the coup data
+
+ # temp.files <- list.files("input/temp")
+ # coup.files <- grep("coups", temp.files, value = T)
+ # latest.pull <- which.max(lapply(coup.files, 
+     #                             function(x) {
+      #                              as.Date(gsub("coups-pulled-|.csv", "", x))}))
+ # new_coup <- fread(paste0("input/temp/", coup.files[latest.pull]))
+  
+  new_coup <- fread("input/temp/new-coups-pulled-2023-10-07.csv")
+
+# select variables and print
+  
+  new_coup <- new_coup[, .(cou.s.d = as.integer(sum(cou.s.d)>0), 
+               cou.f.d = as.integer(sum(cou.f.d)>0)), by = .(country, year)]
+  
+  kable(new_coup)
+  
+######################################################################
+# CHECK NAMES BEFORE MERGE
+######################################################################
+  
+  check_names = rbindlist(lapply(seq_len(nrow(new_coup)), function(i){
+    dat_new[grepl(new_coup[i]$country, country),
+            .(coup_country = new_coup[i]$country, 
+              countries_in_sra = country)]
+  }))
+  check_names[, exact_match := coup_country == countries_in_sra]
+  check_names[, has_exact_match := sum(exact_match)>0, by = .(coup_country)]
+  check_names = check_names[!(has_exact_match == T & exact_match == F)]
+  check_names[has_exact_match == F]
+  new_coup[country == "Burkina Faso", country := "Burkina Faso (Upper Volta)"]
+  
+
+######################################################################  
+  
+# merge coup data into dat_new
+  
+  dat_new <- merge_dat(new_data = new_coup, 
+                       merge_new_by = c("country", "year"), 
+                       merge_base_by = c("country", "year"))
+
+# fill in missing values with zeroes
+
+  coup_cols <- c("cou.s.d", "cou.f.d")
+  dat_new[, (coup_cols) := lapply(.SD, function(x) 
+    ifelse(is.na(x), 0, x)), .SD = coup_cols]
+
+# update cou.any variable (1 if there was either a failed or successful coup)
+  
+  dat_new[, cou.any := ifelse(cou.s.d>0 | cou.f.d>0, 1, 0)]
+  
+```
+
+#merge in new mass killing data
+In a typical year, this would consist of manually making updates to the relevant MK vars based on changes in the prior year. This year, we recoded the DV so below I merge in 2022 values for the relevant MK variables.
+
+```{r}
+base_mk_data = "input/basedata2023_13sept2023.csv"
+
+  mk_dat_2022 <- fread(base_mk_data)
+  
+  #limit to 2022 and relevant columns
+  
+  mk_dat_2022 <- mk_dat_2022 %>% 
+    filter(year == 2022) %>% 
+    select(-country,-V1,)
+  
+  dat_new <- dat_new %>% 
+    left_join(mk_dat_2022, by = c("ccode","year")) %>% 
+    mutate(datastartyear = ifelse(year == 2022, datastartyear.y,datastartyear.x),
+           dataendyear = ifelse(year == 2022, dataendyear.y,dataendyear.x),
+           mk_onset_count = ifelse(year == 2022, mk_onset_count.y, mk_onset_count.x),
+           mk_offset_count = ifelse(year == 2022, mk_offset_count.y,mk_offset_count.x),
+           mk_ongoing_count = ifelse(year == 2022, mk_ongoing_count.y,mk_ongoing_count.x),
+           mk_location_ever = ifelse(year == 2022, mk_location_ever.y,mk_location_ever.x),
+           mk_responsible_ever = ifelse(year == 2022, mk_responsible_ever.y, mk_responsible_ever.x),
+           mk_ongoing_widescope = ifelse(year == 2022, mk_ongoing_widescope.y, mk_ongoing_widescope.x),
+           mk_ongoing_code = ifelse(year == 2022, mk_ongoing_code.y, mk_ongoing_code.x),
+           mk_ethnicflag = ifelse(year == 2022, mk_ethnicflag.y, mk_ethnicflag.x),
+           mk_ongoing = ifelse(year == 2022, mk_ongoing.y, mk_ongoing.x),
+           mk_onset = ifelse(year == 2022, mk_onset.y, mk_onset.x),
+           mk_offset = ifelse(year == 2022, mk_offset.y, mk_offset.x),
+           widetargeting = ifelse(year == 2022, widetargeting.y, widetargeting.x),
+           narrowtargeting = ifelse(year == 2022, narrowtargeting.y, narrowtargeting.x)) %>% 
+    select(-datastartyear.y,-datastartyear.x, -dataendyear.y,-dataendyear.x,-mk_onset_count.y, -mk_onset_count.x, -mk_offset_count.y,-mk_offset_count.x,-mk_ongoing_count.y,-mk_ongoing_count.x, -mk_location_ever.y,-mk_location_ever.x,-mk_responsible_ever.y, -mk_responsible_ever.x,-mk_ongoing_widescope.y, -mk_ongoing_widescope.x,-mk_ongoing_code.y, -mk_ongoing_code.x,-mk_ethnicflag.y, -mk_ethnicflag.x,-mk_ongoing.y, -mk_ongoing.x,-mk_onset.y, -mk_onset.x,-mk_offset.y, -mk_offset.x,-widetargeting.y, -widetargeting.x,-narrowtargeting.y, -narrowtargeting.x)
+    
+```
+
+
+# Append new data
+
+This appends dat_new to dat_old, creating the full data-set
+
+```{r}
+# check to make sure you can append the new data
+
+  if(length(setdiff(colnames(dat_old), colnames(dat_new)))>0){
+    stop("different colnames")}
+
+
+# append new data
+  
+  setcolorder(dat_new, colnames(dat_old))
+  dat <- rbind(dat_old, dat_new, fill = T)
+  
+```
+
+
+```{r, eval = F}
+# save mass killing variables
+
+  mkl_dat <- subset(dat, select = c("country", "ccode", "year", 
+                                    "mk_onset", "mk_onset_count","mk_offset", "mk_offset_count",
+                                    "mk_ongoing_count", "mk_location_ever","mk_responsible_ever",
+                                    "mk_ongoing_code","mk_ongoing","widetargeting","narrowtargeting"))
+
+data.table(mkl_dat)
+
+  setkey(mkl_dat, country, year)
+  
+  fwrite(mkl_dat, file = "output/mkl_data.csv", row.names = F)
+  
+```
+
+
+# Leads and Lags
+
+In this section, I update the variables that involve leads and lags
+
+## MK lead variables
+
+```{r}
+
+# order by year, country name, and ccode
+    
+  setkey(dat, year, country, ccode)
+
+# create anymk lead variable, shifting by ccode
+    
+dat <- dat %>%
+  group_by(ccode) %>%
+  arrange(country, year) %>%
+  mutate(
+    mk.onset.1 = lead(mk_onset, default = NA),
+    mk.onset.2 = lead(mk.onset.1, default = NA),
+    mk.onset.3 = lead(mk.onset.1, n = 2, default = NA),
+    mk.onset.2window = as.double((mk.onset.1 + mk.onset.2) > 0),
+    mk.onset.3window = as.double((mk.onset.2window + mk.onset.3) > 0)
+  ) %>%
+  ungroup()
+    
+```
+
+## Coup in the last 5 years
+
+
+For countries that are created as a result of a coup, we want to ensure that our "coup.try.5yr" indicator shows that they had a coup in the first year of existence, though these are typically not tracked in the Powell & Tyne data. Therefore I turn coup.try.5yr on manually for these countries. This applies to Gabon (coup in 1964) and Djibouti (coup in 2000).
+
+```{r}
+
+# create a variable for the last year when an ccode had a coup
+
+setDT(dat)
+  
+  dat[, last_coup_yr := ifelse(cou.any == 1, year, NA)]
+
+# update last_coup_yr for coup-created countries
+dat <- dat %>% 
+  mutate(last_coup_yr = ifelse(country == "Gabon" & year %in% c(1964:1969),1964,last_coup_yr),
+         last_coup_yr = ifelse(country == "Djibouti" & year %in% c(2000:2005),2000,last_coup_yr))
+
+  dat[, last_coup_yr := na.locf(last_coup_yr, fromLast = F, na.rm = F), 
+      by = "ccode"]
+  dat[, last_coup_yr := ifelse(is.na(last_coup_yr), -Inf, last_coup_yr)]
+  
+# create variable for whether there was a coup in the last 5 years
+  
+  dat[, coup.try.5yr := as.double((year - last_coup_yr) <= 4)]
+
+```
+
+# Data Preparation
+
+
+## Remake some variables
+
+This section fills in some V-DEM variables by creating an adjusted version of the relevant WDI variable. This significantly cuts down on missingness.
+
+```{r}
+make.combined <- function(vdem.var, wdi.proxy){
+  # Make an adjusted version of the wdi one to fit the tradeshare (VDEM) one:  
+    # drop update year as we've carried forward some values to this year
+  
+    lm.adjust <- lm(as.formula(paste0(vdem.var, "~", wdi.proxy)), 
+                    data = dat[year < update_years])
+    
+  # fill in update years with fitted values from regression on all years  
+    
+    dat[year %in% update_years, lm.adjust := coef(lm.adjust)[1] + 
+          coef(lm.adjust)[2]*get(wdi.proxy)]
+  
+  # Where vdem var is missing, replace with the adjusted wdi proxy
+    combined.var <- paste0(vdem.var, ".combined")
+    dat[year %in% update_years, 
+        (combined.var) := 
+          ifelse(!is.na(get(vdem.var)), get(vdem.var), lm.adjust)]
+    
+  # summarize difference in missingness
+    na.old <- sum(is.na(subset(dat[year %in% update_years], select = vdem.var)))
+    na.new <- sum(is.na(subset(dat[year %in% update_years], select = combined.var))) 
+  
+    cat(paste0("In the update years we were missing ", na.old, 
+           " observations for ", vdem.var))
+    cat(paste0("\nUsing the WD indicator, ",  wdi.proxy, 
+               ", as a proxy we are missing ",  na.new, " observations"))
+
+    dat[, lm.adjust := NULL]
+}    
+```
+
+
+
+```{r}
+# create combined variable for tradeshare
+
+  make.combined(vdem.var = "tradeshare.ln", wdi.proxy = "wdi.trade.ln.new")
+  cat("\n")
+
+# create combined variable for popsize.ln 
+
+  make.combined(vdem.var = "popsize.ln", wdi.proxy = "wdi.popsize.ln")
+  cat("\n")
+  
+    make.combined(vdem.var = "popsize", wdi.proxy = "wdi.popsize.new")
+  cat("\n")
+
+# create combined variable for GDP per capita growth
+
+  make.combined(vdem.var = "gdppcgrowth", wdi.proxy = "wdi.gdppcgrow.new")
+  
+# create combined variable for infant mortality - hold on this vdem var is  not right
+  # make.combined(vdem.var = "e_peinfmor", wdi.proxy = "wdi.imrate.new")
+  #  cat("\n")
+
+```
+
+
+#Update Discrimpop, Ldiscrimpop, efindex and womeninparliament
+EPR dataset - goes through 2020, carry forward (there is additional data avail online, check if it can be downloaded for future updates)
+HIEF dataset - goes through 2013, carry forward
+womeninparliament - goes through 2020, carry forward (there is additional data avail online, check if it can be downloaded for future updates)
+
+#Fix old MK data to use in old model - Have to fix this data for Iraq in the old MK vars so that we can compare old to new model
+```{r}
+setDT(dat)
+dat[country == "Iraq" & year == 2018, mkl.end := 1]
+dat[country == "Iraq" & year == 2019, mkl.ongoing := 0]
+dat[country == "Iraq" & year == 2020, mkl.ongoing := 0]
+dat[country == "Iraq" & year == 2021, mkl.ongoing := 0]
+dat[country == "Iraq" & year == 2022, mkl.ongoing := 0]
+```
+
+# Missingness
+
+
+
+This section looks at remaining missingness and attempts to fill in values. 
+
+```{r}
+# select variables we would like to check missingness for (2023 update added "efindex", "discrimpop", "v2mecenefm_binary","v2csgender_binary", "mk_ongoing", "partyban.new.0", "partyban.new.1", "partyban.new.2", mk_location_ever","mk_responsible_ever", "widetargeting","narrowtargeting", "imr.sqrt.new" and removed polity2.fl.2","polity2.fl.3" and "durable.ln" as those are no longer used )
+
+
+  predictornames <- c("anymk.ongoing","anymk.ever",
+                      "reg.afr", "reg.eap", "reg.eur", "reg.mna", "reg.sca",
+                      "countryage.ln", "popsize.ln.combined", "imr.sqrt.new",
+                      "gdppcgrowth.combined", "ios.iccpr1","includesnonstate",
+                      "minorityrule", "elf.ethnic", 
+                      "battledeaths.ln", "candidaterestriction", "partyban", 
+                      "judicialreform", "religiousfreedom", 
+                      "pol_killing_approved", "freemove_men4", 
+                      "freemove_women4", "freediscussion",
+                      "social_inequality","even_civilrights","repress_civilsoc", 
+                      "social_power_dist", "ses_power_dist",
+                      "tradeshare.ln.combined", 
+                      "coup.try.5yr",
+                      "efindex", "discrimpop", "v2mecenefm_binary",
+                      "mk_ongoing", "partyban.new.0", 
+                      "partyban.new.1", "partyban.new.2",
+                      "mk_location_ever","mk_responsible_ever",
+                      "widetargeting","narrowtargeting", "wdi.gdppc.new")
+
+
+# look for missingness in the update years for select variables
+
+  dat.check <- subset(dat, year %in% update_years, 
+                      select = c("country","year", predictornames))
+
+# for each of the update years, count the number of NAs for each variable
+# select variables with positive NA counts
+
+  comp <- lapply(update_years, 
+                 function(y) apply(dat.check[year == y], 
+                                   2, function(x) sum(is.na(x))))
+  na.count <- unlist(comp)
+  years <- rep(update_years, each = ncol(dat.check))
+  check <- data.table(na.count, years, "var"=names(na.count))
+  check <- check[na.count > 0]
+
+# visualize missingness
+  
+   (missing1 <- ggplot(check) + 
+      geom_bar(aes(y = na.count, x = var, fill = factor(years)), 
+               stat = "identity")+ 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+      labs(x = "Missing Variables", y = "Number of Observations Missing", 
+           fill = "Year", 
+           title = "Number of Countries with Missing Values Before Fixing"))
+
+```
+
+## Fix missingness
+
+This chunk defines functions to look at patterns in NAs and carry forward values.
+
+```{r}
+
+# function to look at patterns in NAs over time for each country with missing values
+
+  look_na <- function(variable, data = dat){
+    missing <- data[is.na(get(variable)) & 
+                     year %in% update_years, c("year", "country")]
+    countries <- unique(missing$country)
+    if(length(countries) == 0){
+      look <- "No missing values"
+    }else{
+      look <-lapply(1:length(countries), function(x){
+        out <- subset(data, country == countries[x],
+                      select = c("year", variable)) 
+        colnames(out) <- c("year", countries[x])
+        out})
+      
+      # merge all data.tables in the list by year
+        look <- Reduce(function(...) merge(..., all = T, by = "year"), look)
+        colnames(look) <- c("year", as.character(countries))
+        look <- look[order(look$year, decreasing = TRUE), ]
+      }
+    look
+  }
+
+
+# function to create blank spreadsheets to fill out 
+  
+  fill.tab <- function(var){
+    out <- subset(dat[is.na(get(var)) & year %in% update_years], 
+                  select = c("country", var))
+    out[, cia.factbook.est := NA]
+    out[, est.year := NA]
+    fwrite(out, file = paste0("Make-new-base-data/input/temp/missing/", var, ".csv"))
+  }
+  
+
+# function to look at last present value for countries missing data in update years
+  
+  last.present <- function(var){
+    look.na.long <- melt(look.na.vars[[var]], id.vars = "year", 
+                         variable.name = "country")
+    setorder(look.na.long, country, year)
+    look.na.long[, value_last := shift(value), by = country]
+    look.na.long[, same_as_last := value == value_last]
+    look.na.long[!is.na(value) & is.na(value_last), same_as_last := F]
+    look.na.long[!is.na(same_as_last) & same_as_last == F, 
+                 .("carried_value" = value[which.max(year)], 
+                   "carry_from" = max(year)), by = .(country)]
+
+  }
+
+```
+
+
+```{r}
+# for each of the variables that we have countries with missing values
+# look at the values in the last few years for that country
+#creates blank spreadsheets to fill out
+
+  look.na.vars <- lapply(c(check$var, "imr.sqrt.new"), look_na)
+  names(look.na.vars) <- c(check$var, "imr.sqrt.new")
+
+  if(first.pass == T){
+    dir.create("Make-new-base-data/input/temp/missing")  
+    lapply(check$var, fill.tab)
+    fill.tab("imr.sqrt.new")
+    }  
+```
+
+
+### Candidate Restriction
+
+```{r}      
+# candidate restriction
+
+  head(look.na.vars$candidaterestriction) 
+
+#fill in prior years that were carried forward (they were removed as a result of new vdem merge for 2022 update)
+dat[country == "Jamaica" & year == 2019, candidaterestriction := 1]
+dat[country == "Jamaica" & year == 2020, candidaterestriction := 1]
+dat[country == "Jamaica" & year == 2021, candidaterestriction := 1]
+dat[country == "Jamaica" & year == 2022, candidaterestriction := 1]
+
+  
+# just carry forward this value 
+  
+  carry_forward("candidaterestriction")
+
+```
+
+For the variables addressed below, I read in values from the CIA Factbook (which were entered manually into the spreadsheet created above), and carry those values forward if they're more recent than the last updated version of the variable.
+
+In the tables presented for each variable, I show the value that is filled in for that country in column 2. This is either the "carried_value", carried from the year listed under "carry_from", or it is the "cia.factbook.est".
+
+### Infant Mortality
+
+#10/20 - holding on  this because we are interpolating
+
+Countries filled in for 2022:
+- Kosovo
+
+```{r, eval = FALSE}
+
+ # head(look.na.vars$imr.sqrt)
+
+# read in CIA Factbook estimates
+
+#  cia.factbook <- fread("input/temp/missing/imr.sqrt.csv")
+ # cia.factbook[, cia.factbook.est := sqrt(cia.factbook.est)]
+  
+  
+  # subtract one from the carry_from value because there is a lag
+  # in updating the infant mortality rate
+  
+#  comp <- merge(cia.factbook, last.present("imr.sqrt"), 
+                by = "country")
+ # comp[, imr.sqrt := ifelse(carry_from >= est.year, 
+                                        carried_value, cia.factbook.est)]
+#  kable(comp)
+  
+# replace missing
+
+#  for(i in 1:nrow(comp)){
+ #   country.fill <- comp[i, ]
+  #  dat[country ==  country.fill$country & year == update_years, 
+   #     imr.sqrt := country.fill$imr.sqrt]
+  }
+  
+
+
+```
+
+### Population size 
+
+Countries filled in for 2022:
+- Taiwan
+
+
+```{r} 
+
+  head(look.na.vars$popsize.ln.combined)
+
+
+# read in CIA Factbook estimates
+
+  cia.factbook <- fread("input/temp/missing/popsize.ln.combined.csv")
+  
+  comp <- merge(cia.factbook, last.present("popsize.ln.combined"), 
+                by = "country")
+    
+  comp[, popsize.ln.combined := ifelse(carry_from >= est.year, 
+                                       carried_value, log(cia.factbook.est))]
+  comp[, popsize.combined := ifelse(carry_from >= est.year, 
+                                        carried_value, cia.factbook.est)]
+  kable(comp)
+  
+# replace missing
+  
+  setDT(dat)
+
+  for(i in 1:nrow(comp)){
+    country.fill <- comp[i, ]
+    dat[country ==  country.fill$country & year == update_years, 
+        popsize.ln.combined := country.fill$popsize.ln.combined]
+  }
+
+  for(i in 1:nrow(comp)){
+    country.fill <- comp[i, ]
+    dat[country ==  country.fill$country & year == update_years, 
+        popsize.combined := country.fill$popsize.combined]
+  }
+```
+
+
+### GDP Per capita growth
+
+In 2022, this variable is missing for the following countries: 
+
+```{r, echo = F}
+
+  head(look.na.vars$gdppcgrowth.combined)
+
+missing_22 <- c("Afghanistan", "Bhutan","Cuba", "Eritrea","Korea, People's Republic of", "Kosovo", "Lebanon", "South Sudan", "Syria", "Taiwan", "Turkmenistan", "Venezuela", "Yemen (unified)", "Yugoslavia")
+cat(paste(paste(missing_22, collapse = ", "), "\n"))
+```
+
+The following countries are newly missing, and have more recent estimates from the WDI than the CIA factbook, so we carry old WDI values forward (none applicable)
+
+```{r}
+missing_23 = colnames(look.na.vars$gdppcgrowth.combined)[-1]
+cat(paste(paste(setdiff(missing_23, missing_22), collapse = ", "), "\n"))
+```
+
+
+```{r}
+
+# read in CIA Factbook estimates
+# Called "Real GDP growth rate" IN FACTBOOK
+
+  cia.factbook <- fread("input/temp/missing/gdppcgrowth.combined.csv")
+  comp <- merge(cia.factbook, last.present("gdppcgrowth.combined"), 
+                by = "country")
+  comp[, cia.factbook.est := cia.factbook.est/100]
+
+  
+  comp[, gdppcgrowth.combined := ifelse(carry_from >= est.year, 
+                                        carried_value, cia.factbook.est)]
+  comp[, source := factor(carry_from >= est.year & as.character(round(carried_value, 4)) != as.character(cia.factbook.est), levels = c("TRUE", "FALSE"), labels = c("carry_WDI", "CIA_Factbook"))]
+
+  kable(comp[order(source)], digits = 3)
+  
+# replace missing
+  
+  setDT(dat)
+
+  for(i in 1:nrow(comp)){
+    country.fill <- comp[i, ]
+    dat[country ==  country.fill$country & year == update_years, 
+        gdppcgrowth.combined := country.fill$gdppcgrowth.combined]
+  }
+
+```
+
+
+
+### tradeshare.ln.combined
+
+#### First fill in GDP per capita
+Filled in :
+- Eritrea, North Korea, South Sudan, Taiwan, Venezuela, Yemen
+
+```{r}
+
+  head(look.na.vars$wdi.gdppc.new)
+
+  cia.factbook <- fread("input/temp/missing/wdi.gdppc.new.csv")
+  comp <- merge(cia.factbook, last.present("wdi.gdppc.new"), 
+                by = "country", all.x = T)
+
+  comp[, wdi.gdppc.new := ifelse((est.year < (carry_from-1) & !is.na(carry_from))|
+                                   is.na(cia.factbook.est), carried_value, 
+                                 cia.factbook.est)]
+  comp[, source := factor(carry_from-1 > est.year & as.character(round(carried_value, 4)) != as.character(cia.factbook.est), levels = c("TRUE", "FALSE"), labels = c("carry_WDI", "CIA_Factbook"))]
+  kable(comp[order(source)], digits = 3)
+  
+  # replace missing
+  
+  setDT(dat)
+
+  for(i in 1:nrow(comp)){
+    country.fill <- comp[i, ]
+    dat[country ==  country.fill$country & year == update_years, 
+        wdi.gdppc.new := country.fill$wdi.gdppc.new]
+  }
+```
+
+
+#### Calculate Tradeshare
+
+In the 2021 update, we used CIA Factbook estimates for the following countries: 
+
+```{r, echo = F}
+missing_21 <- c("Afghanistan", "Guyana", "Laos", "Malawi", "Taiwan")
+missing_22 <- colnames(look.na.vars$tradeshare.ln.combined)[-1]
+cat(paste(paste(missing_21, collapse = ", "), "\n"))
+```
+
+Many of these countries still have missing values during the 2022 update, so we continue to use CIA Factbook values for them. The following countries are newly missing tradeshare data in 2022:
+
+```{r, echo = F}
+ cat(paste(paste(intersect(missing_22, missing_21), collapse = ", "), "\n"))
+cat(paste(paste(setdiff(missing_22, missing_21), collapse = ", "), "\n"))
+```
+
+
+
+```{r}
+# read in CIA Factbook estimates - be sure to enter in billions 
+
+  head(look.na.vars$tradeshare.ln.combined)
+
+  cia.factbook <- fread("input/temp/missing/tradeshare.ln.combined.csv")
+  comp <- merge(cia.factbook, last.present("tradeshare.ln.combined"), 
+                by = "country")
+  other.vars <- dat[year == update_years, 
+                    c("wdi.gdppc.new", "popsize.combined", "country")]
+  comp <- merge(comp, other.vars, by= "country", all.x = T)
+  
+    
+  # The VDEM imports and exports are in millions of USDs, then x10^6. 
+  # tradeshare = (imports + exports (in trillions))/(gdppc*popsize)
+  # The CIA factbook data is in billions, so needs to be multiplied by 1e+9
+  comp[, cia.factbook.est := log(1e+9*cia.factbook.est/(wdi.gdppc.new*popsize.combined))]
+
+
+  
+    comp[, tradeshare.ln.combined := 
+           ifelse(est.year <= carry_from, carried_value, cia.factbook.est)]
+    comp[, source := factor(carry_from >= est.year & as.character(round(carried_value, 4)) != as.character(cia.factbook.est), levels = c("TRUE", "FALSE"), labels = c("carry_WDI", "CIA_Factbook"))]
+    comp[country %in% intersect(missing_22, missing_21), source := "CIA_Factbook"]
+    kable(subset(comp[order(source)], select = c("country", "tradeshare.ln.combined",
+                                  "cia.factbook.est", "est.year", 
+                                  "carried_value", "carry_from", "source")))
+
+# replace missing
+
+  for(i in 1:nrow(comp)){
+    country.fill <- comp[i, ]
+    dat[country ==  country.fill$country & year == update_years, 
+        tradeshare.ln.combined := country.fill$tradeshare.ln.combined]
+  }
+    
+
+  # carry_forward("tradeshare.ln.combined")
+  
+```
+
+
+
+## Check that all is filled in
+
+```{r}
+# repeat to make sure there are no more missing
+    
+  look.na.vars <- lapply(check$var, function(x) 
+    look_na(x, dat = dat[year>=1945 & country!="Taiwan"]))
+  names(look.na.vars) <- check$var
+  look.na.vars
+  
+
+```
+
+
+
+#Export the new prepared predictors file:
+```{r}
+
+fwrite(dat, file = paste0("output/prepared", update_years, "predictors-", Sys.Date(), "-2", ".csv"))
+
+```
+
